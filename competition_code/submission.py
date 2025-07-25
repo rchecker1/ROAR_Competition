@@ -80,8 +80,8 @@ class RoarCompetitionSolution:
             self.current_waypoint_idx,
             self.maneuverable_waypoints
         )
-         # We use the 3rd waypoint ahead of the current waypoint as the target waypoint
-        waypoint_to_follow = self.maneuverable_waypoints[(self.current_waypoint_idx + 3) % len(self.maneuverable_waypoints)]
+         # We use the 2nd waypoint ahead of the current waypoint as the target waypoint
+        waypoint_to_follow = self.maneuverable_waypoints[(self.current_waypoint_idx + 2) % len(self.maneuverable_waypoints)]
 
         # Calculate delta vector towards the target waypoint
         vector_to_waypoint = (waypoint_to_follow.location - vehicle_location)[:2]
@@ -89,15 +89,27 @@ class RoarCompetitionSolution:
 
         # Calculate delta angle towards the target waypoint
         delta_heading = normalize_rad(heading_to_waypoint - vehicle_rotation[2])
-
         # Proportional controller to steer the vehicle towards the target waypoint
-        steer_control = (
-            -8.0 / np.sqrt(vehicle_velocity_norm) * delta_heading / np.pi
-        ) if vehicle_velocity_norm > 1e-2 else -np.sign(delta_heading)
-        steer_control = np.clip(steer_control, -1.0, 1.0)
+        if vehicle_velocity_norm < 3.0:  # Very low speed/startup
+            steer_control = -1.0 * delta_heading / np.pi
+        else:  # Normal speed - gentler steering
+            steer_control = -2.5 / np.sqrt(max(vehicle_velocity_norm, 5.0)) * delta_heading / np.pi
 
-        # Proportional controller to control the vehicle's speed towards 40 m/s
-        throttle_control = 0.05 * (20 - vehicle_velocity_norm)
+        steer_control = np.clip(steer_control, -1.0, 1.0)
+        
+
+        """# Proportional controller to control the vehicle's speed towards 40 m/s
+        throttle_control = 0.05 * (15 - vehicle_velocity_norm)"""
+
+        # Early braking and better speed control
+        if abs(delta_heading) > 0.6:  # Sharp turn detected early
+            target_speed = 15  # Slow down more for sharp turns
+        elif abs(delta_heading) > 0.3:  # Moderate turn
+            target_speed = 22  # Moderate speed for moderate turns
+        else:  # Straight or slight turn
+            target_speed = 35  # Fast on straights
+
+        throttle_control = 0.08 * (target_speed - vehicle_velocity_norm)
 
         control = {
             "throttle": np.clip(throttle_control, 0.0, 1.0),
