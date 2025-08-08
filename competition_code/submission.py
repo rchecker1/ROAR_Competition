@@ -40,6 +40,8 @@ class RoarCompetitionSolution:
         self.rpy_sensor = rpy_sensor
         self.occupancy_map_sensor = occupancy_map_sensor
         self.collision_sensor = collision_sensor
+        # ADD: Steering history for smoothing
+        self.last_steer = 0.0
     
     async def initialize(self) -> None:
         # TODO: You can do some initial computation here if you want to.
@@ -56,11 +58,10 @@ class RoarCompetitionSolution:
             self.current_waypoint_idx,
             self.maneuverable_waypoints
         )
+        # ADD: Initialize steering
+        self.last_steer = 0.0
 
-
-    async def step(
-        self
-    ) -> None:
+    async def step(self) -> None:
         """
         This function is called every world step.
         Note: You should not call receive_observation() on any sensor here, instead use get_last_observation() to get the last received observation.
@@ -80,8 +81,8 @@ class RoarCompetitionSolution:
             self.current_waypoint_idx,
             self.maneuverable_waypoints
         )
-         # We use the 2nd waypoint ahead of the current waypoint as the target waypoint
-        waypoint_to_follow = self.maneuverable_waypoints[(self.current_waypoint_idx + 2) % len(self.maneuverable_waypoints)]
+         # We use the 3rd waypoint ahead of the current waypoint as the target waypoint
+        waypoint_to_follow = self.maneuverable_waypoints[(self.current_waypoint_idx + 3) % len(self.maneuverable_waypoints)]
 
         # Calculate delta vector towards the target waypoint
         vector_to_waypoint = (waypoint_to_follow.location - vehicle_location)[:2]
@@ -89,27 +90,26 @@ class RoarCompetitionSolution:
 
         # Calculate delta angle towards the target waypoint
         delta_heading = normalize_rad(heading_to_waypoint - vehicle_rotation[2])
-        # Proportional controller to steer the vehicle towards the target waypoint
-        if vehicle_velocity_norm < 3.0:  # Very low speed/startup
-            steer_control = -1.0 * delta_heading / np.pi
-        else:  # Normal speed - gentler steering
-            steer_control = -2.5 / np.sqrt(max(vehicle_velocity_norm, 5.0)) * delta_heading / np.pi
 
-        steer_control = np.clip(steer_control, -1.0, 1.0)
+        # ANTI-SWERVE FIX 1: Slightly gentler steering gains
+        if vehicle_velocity_norm > 1e-2:
+            # Reduced from -1.5 to -1.3 for less aggressiveness
+            steer_control = -1.3 / np.sqrt(vehicle_velocity_norm) * delta_heading / np.pi
+        else:
+            steer_control = -np.sign(delta_heading)
         
+        # ANTI-SWERVE FIX 2: Add steering rate limiting
+        max_steer_change = 0.12  # Limit how much steering can change per frame
+        steer_change = steer_control - self.last_steer
+        if abs(steer_change) > max_steer_change:
+            steer_control = self.last_steer + np.sign(steer_change) * max_steer_change
+        
+        # Store for next frame
+        self.last_steer = steer_control
+        steer_control = np.clip(steer_control, -1.0, 1.0)
 
-        """# Proportional controller to control the vehicle's speed towards 40 m/s
-        throttle_control = 0.05 * (15 - vehicle_velocity_norm)"""
-
-        # Early braking and better speed control
-        if abs(delta_heading) > 0.6:  # Sharp turn detected early
-            target_speed = 15  # Slow down more for sharp turns
-        elif abs(delta_heading) > 0.3:  # Moderate turn
-            target_speed = 22  # Moderate speed for moderate turns
-        else:  # Straight or slight turn
-            target_speed = 35  # Fast on straights
-
-        throttle_control = 0.08 * (target_speed - vehicle_velocity_norm)
+        # Proportional controller to control the vehicle's speed towards 40 m/s
+        throttle_control = 0.05 * (20 - vehicle_velocity_norm)
 
         control = {
             "throttle": np.clip(throttle_control, 0.0, 1.0),
